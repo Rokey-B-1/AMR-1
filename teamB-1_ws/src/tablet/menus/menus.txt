@@ -1,0 +1,7 @@
+스테이크/29900/steak.jpg
+굴 파스타/12900/cave_oil_pasta.jpg
+토마토 파스타/12900/tomato_pasta.jpg
+팬케이크 with 라즈베리/7900/pancakes.jpg
+버섯 리조또/11900/risotto.jpg
+감자튀김/5900/french_fries.jpg
+와인 한 잔/3900/wine.jpg
