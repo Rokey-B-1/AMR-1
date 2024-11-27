@@ -1,0 +1,8 @@
+# Request
+int32 table_id
+string[] menu_items     # 메뉴 항목들
+int32 total_price      # 총 가격
+---
+# Response
+bool success
+string message
