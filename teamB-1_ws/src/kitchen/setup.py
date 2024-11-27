@@ -20,7 +20,8 @@ setup(
     tests_require=['pytest'],
     entry_points={
         'console_scripts': [
-            'kitchen_node = kitchen.kitchen:main' 
+            'kitchen_node = kitchen.kitchen:main',
+            'kitchen_ui = kitchen.kitchen_with_ui:main' 
         ],
     },
 )

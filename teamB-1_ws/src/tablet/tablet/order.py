@@ -1,14 +1,17 @@
 import sys
 from PyQt5 import QtCore, QtGui, QtWidgets
-from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel
+from PyQt5.QtWidgets import QApplication, QMainWindow, QLabel, QMessageBox
 from PyQt5.QtGui import QPixmap, QFont
 from PySide2.QtCore import *
 
 import rclpy
 from rclpy.node import Node
-from std_msgs.msg import String # 추후에 인터페이스 임포트 변경
+from system_interfaces.msg import OrderStatus
+from system_interfaces.srv import OrderDetail
+# from std_msgs.msg import String
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.callback_groups import ReentrantCallbackGroup
+
 
 class TableNode(QThread, Node):
     message_received = Signal(str)
@@ -23,33 +26,41 @@ class TableNode(QThread, Node):
 
         # 주문 상태를 서브스크라이브
         self.subscription = self.create_subscription(
-            String, 
+            OrderStatus, 
             'order_status', 
             self.subscription_callback, 
             10, 
             callback_group=self.callback_group
-        ) # 추후 인터페이스 타입 변경
+        )
         
         # 주문을 보내는 서비스
         self.order_client = self.create_client(
-            String, # 추후 인터페이스 타입 변경
+            OrderDetail, # 추후 인터페이스 타입 변경
             'order_detail',
             callback_group=self.callback_group
         )
         
         while not self.order_client.wait_for_service(timeout_sec=0.1) :
-            self.get_logger.warning("The order service (server -> kitchen) not available.")
+            self.get_logger().warning("The order service (server -> kitchen) not available.")
 
     def subscription_callback(self, msg):
-        num = msg.table_number
-        status = msg.status
+        num = msg.table_numbers
+        status = msg.order_states
         
         if num == self.table_number :
-            # self.get_logger().info(f'Received message: {status}')
+            self.get_logger().info(f'Received message: {status}')
             self.message_received.emit(status)
             
-    def send_request(self) :
-        pass 
+    def send_request(self, number, menus, prices) :
+        service_request = OrderDetail.Request()
+        
+        service_request.table_id = int(number)
+        service_request.menu_items = menus
+        service_request.total_price = int(prices)
+        
+        future = self.order_client.call_async(service_request)
+        
+        return future
 
     def run(self):
         rclpy.spin(self)
@@ -58,7 +69,8 @@ class TableNode(QThread, Node):
 class order_program(object):
     def __init__(self, table_number, node) :
         self.node = node
-        # self.node.message_received.connect(self.add_message)
+        self.node.message_received.connect(self.change_status)
+        
         self.number = table_number # 주방 시스템에 서비스로 보낼 것
         
         """ 변수 """
@@ -115,6 +127,7 @@ class order_program(object):
         self.btn_layout.addWidget(self.previous_btn)
         self.select_btn = QtWidgets.QPushButton(self.horizontalLayoutWidget_2)
         self.select_btn.setObjectName("select_btn")
+        self.select_btn.setStyleSheet("background-color: #ff6347")
         self.btn_layout.addWidget(self.select_btn)
         self.next_btn = QtWidgets.QPushButton(self.horizontalLayoutWidget_2)
         self.next_btn.setObjectName("next_btn")
@@ -141,9 +154,10 @@ class order_program(object):
         self.clear_btn = QtWidgets.QPushButton(self.horizontalLayoutWidget_3)
         self.clear_btn.setObjectName("clear_btn")
         self.verticalLayout.addWidget(self.clear_btn)
-        self.order_btn_2 = QtWidgets.QPushButton(self.horizontalLayoutWidget_3)
-        self.order_btn_2.setObjectName("order_btn_2")
-        self.verticalLayout.addWidget(self.order_btn_2)
+        self.order_btn = QtWidgets.QPushButton(self.horizontalLayoutWidget_3)
+        self.order_btn.setObjectName("order_btn")
+        self.order_btn.setEnabled(False)
+        self.verticalLayout.addWidget(self.order_btn)
         self.horizontalLayout_4.addLayout(self.verticalLayout)
         self.horizontalLayoutWidget_4 = QtWidgets.QWidget(self.centralwidget)
         self.horizontalLayoutWidget_4.setGeometry(QtCore.QRect(310, 270, 331, 41))
@@ -170,10 +184,15 @@ class order_program(object):
         # 초기 메뉴 표시
         self.update_menu()
         
+        if self.selected_menu == None :
+            self.order_btn.setDisabled(True)
+        
         """ 이벤트 연결 """
         self.previous_btn.clicked.connect(self.show_previous)
         self.next_btn.clicked.connect(self.show_next)
         self.select_btn.clicked.connect(self.select_menu)
+        self.clear_btn.clicked.connect(self.clear)
+        self.order_btn.clicked.connect(self.order)
         
     def retranslateUi(self, MainWindow):
         _translate = QtCore.QCoreApplication.translate
@@ -187,7 +206,7 @@ class order_program(object):
         self.table_number.setText(_translate("MainWindow", f"{self.number}번 테이블"))
         self.status_msg.setText(_translate("MainWindow", "메뉴를 고른 후 \'주문\' 버튼을 눌러주세요"))
         self.clear_btn.setText(_translate("MainWindow", "초기화"))
-        self.order_btn_2.setText(_translate("MainWindow", "주문"))
+        self.order_btn.setText(_translate("MainWindow", "주문"))
         self.menu_label.setText(_translate("MainWindow", "메뉴명"))
         self.price_label.setText(_translate("MainWindow", "가격"))
         
@@ -223,7 +242,7 @@ class order_program(object):
             self.current_index += 1
             self.update_menu()
             
-    def select_menu(self):
+    def select_menu(self):        
         menu_name = self.menu_label.text()
         price = int(self.price_label.text()[0:-1])
         
@@ -244,9 +263,44 @@ class order_program(object):
             
         self.seleted_view.setText(seleted_message)
         self.status_msg.setText(f"                    총 {self.total_price}원                    ")
+        self.order_btn.setEnabled(True)
         
-    def order() :
-        pass
+    def clear(self) :
+        self.selected_menu = [] # 주방 시스템에 서비스로 보낼 것 (주문한 메뉴)
+        self.total_price = 0 # 주방 시스템에 서비스로 보낼 것 (주문 총 가격)
+        self.seleted_dict = {}
+        
+        self.status_msg.setText("메뉴를 고른 후 \'주문\' 버튼을 눌러주세요")
+        self.seleted_view.setText("")
+        self.order_btn.setEnabled(False)
+
+    def order(self) :
+        service_response = None
+        
+        self.future = self.node.send_request(self.number, self.selected_menu, self.total_price)
+        
+        # 요청이 완료될 때까지 대기
+        rclpy.spin_until_future_complete(self.node, self.future)
+
+        if self.future.done() :
+            service_response = self.future.result()
+            
+        self.selected_menu = []
+        self.total_price = 0
+        self.seleted_dict = {}
+        
+        self.status_msg.setText("메뉴를 고른 후 \'주문\' 버튼을 눌러주세요")
+        self.seleted_view.setText("")
+        self.order_btn.setEnabled(False)
+        
+        if service_response.success == True :
+            QMessageBox.information(None, 'Order Success', service_response.message)
+        else :
+            QMessageBox.information(None, 'Order Cancel', service_response.message)
+        
+    def change_status(self, status) :
+        self.status_msg.setText(status)
+        
         
 ######################################################################
 def main(args=None) :

@@ -1,8 +1,6 @@
 # Request
 int32 table_id
 string[] menu_items     # 메뉴 항목들
-int32[] quantities      # 각 메뉴의 수량
-int32[] prices         # 각 메뉴의 가격
 int32 total_price      # 총 가격
 ---
 # Response
