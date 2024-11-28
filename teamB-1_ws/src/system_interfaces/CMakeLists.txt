@@ -17,9 +17,9 @@ set(msg_files
   "msg/OrderStatus.msg"
 )
 
-set(srv_filess
+set(srv_files
   "srv/OrderDetail.srv"
-  )
+)
   
 set(action_files
 )
