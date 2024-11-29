@@ -80,7 +80,7 @@ class order_program(object):
         # QTimer 설정 (주기적으로 ROS spin 호출)
         self.timer = QtCore.QTimer()
         self.timer.timeout.connect(self.change_status)
-        self.timer.start(100)  # 100ms마다 호출
+        self.timer.start(200)  # 200ms마다 호출
 
         
     def set_menu(self) :
@@ -303,6 +303,7 @@ class order_program(object):
                 QMessageBox.information(None, 'Order Success', service_response.message)
             else:
                 QMessageBox.information(None, 'Order Cancel', service_response.message)
+                
         except Exception as e:
             QMessageBox.information(None, 'Order Failed', f"Service call failed: {str(e)}")
         
@@ -318,10 +319,6 @@ class order_program(object):
             self.order_btn.setEnabled(False)
         
 
-        
-
-        
-        
 ######################################################################
 def main(args=None) :
     table_number = int(input("테이블 번호를 입력하세요(1~6) : "))
