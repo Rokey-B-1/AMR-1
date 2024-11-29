@@ -51,11 +51,12 @@ class TableNode(QThread, Node):
             self.get_logger().info(f'Received message: {status}')
             self.message_received.emit(status)
             
-    def send_request(self, number, menus, prices) :
+    def send_request(self, number, menus, quantities, prices) :
         service_request = OrderDetail.Request()
         
         service_request.table_id = int(number)
         service_request.menu_items = menus
+        service_request.quantities = quantities
         service_request.total_price = int(prices)
         
         future = self.order_client.call_async(service_request)
@@ -75,6 +76,7 @@ class order_program(object):
         
         """ 변수 """
         self.selected_menu = [] # 주방 시스템에 서비스로 보낼 것 (주문한 메뉴)
+        self.quantities_list = [] # 주방 시스템에 서비스로 보낼 것 (주문한 메뉴 각각의 개수)
         self.current_index = 0
         self.total_price = 0 # 주방 시스템에 서비스로 보낼 것 (주문 총 가격)
         self.seleted_dict = {}
@@ -244,7 +246,7 @@ class order_program(object):
             
     def select_menu(self):        
         menu_name = self.menu_label.text()
-        price = int(self.price_label.text()[0:-1])
+        price = int(self.price_label.text()[0:-1]) # '원' 제거
         
         # 딕셔너리에 메뉴 추가 또는 업데이트
         if menu_name in self.seleted_dict:
@@ -254,9 +256,13 @@ class order_program(object):
 
         # 서비스로 보내기 위해 저장해둠
         self.selected_menu = list(self.seleted_dict.keys())
+        self.quantities_list = [value[0] for value in self.seleted_dict.values()]
         self.total_price += price
-        print(self.selected_menu, self.total_price)
+        
+        ### DB에 저장 ###
 
+
+        # QTextBrowser에 쓰기
         seleted_message = f"[ 선택된 메뉴 ] \n"
         for m, (c, p) in self.seleted_dict.items() :
             seleted_message += f"{m}      {c}개      {p}원\n"
@@ -266,8 +272,8 @@ class order_program(object):
         self.order_btn.setEnabled(True)
         
     def clear(self) :
-        self.selected_menu = [] # 주방 시스템에 서비스로 보낼 것 (주문한 메뉴)
-        self.total_price = 0 # 주방 시스템에 서비스로 보낼 것 (주문 총 가격)
+        self.selected_menu = []
+        self.total_price = 0
         self.seleted_dict = {}
         
         self.status_msg.setText("메뉴를 고른 후 \'주문\' 버튼을 눌러주세요")
@@ -277,7 +283,7 @@ class order_program(object):
     def order(self) :
         service_response = None
         
-        self.future = self.node.send_request(self.number, self.selected_menu, self.total_price)
+        self.future = self.node.send_request(self.number, self.selected_menu, self.quantities_list, self.total_price)
         
         # 요청이 완료될 때까지 대기
         rclpy.spin_until_future_complete(self.node, self.future)

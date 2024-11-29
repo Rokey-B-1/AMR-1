@@ -4,6 +4,8 @@ from PyQt5 import QtCore, QtWidgets
 from PyQt5.QtWidgets import QApplication, QMainWindow
 from PyQt5.QtCore import QTimer
 import rclpy
+import sqlite3
+import json  
 from rclpy.node import Node
 from system_interfaces.srv import OrderDetail
 from system_interfaces.msg import OrderStatus
@@ -68,19 +70,28 @@ class KitchenUI(QMainWindow):
         self.update_order_list()  # 주문 목록 업데이트
 
     def handle_order_cancel(self):
+        """주문 취소 버튼 클릭 시 개별 메뉴 취소"""
         selected_items = self.orderList.selectedItems()
         if selected_items:
+            # 선택된 항목 가져오기 (예: "Table 1 - Burger (2)")
             item_text = selected_items[0].text()
+
             try:
-                table_id = int(item_text.split()[1])
-                for status in self.ros_node.order_status_list[:]:
-                    if f"Table {table_id}" in status:
-                        self.ros_node.order_status_list.remove(status)
-                self.status_label.setText(f"테이블 {table_id} 주문 취소됨")
-            except (IndexError, ValueError):
-                self.status_label.setText("취소할 주문을 선택하세요.")
+                # `order_status_list`에서 해당 항목 제거
+                if item_text in self.ros_node.order_status_list:
+                    self.ros_node.order_status_list.remove(item_text)
+                    self.status_label.setText(f"'{item_text}'가 취소되었습니다.")
+                    
+                    # UI에서 해당 항목 삭제
+                    self.orderList.takeItem(self.orderList.row(selected_items[0]))
+                else:
+                    self.status_label.setText("해당 주문을 찾을 수 없습니다.")
+            except Exception as e:
+                self.status_label.setText("주문 취소 중 오류가 발생했습니다.")
+                self.ros_node.get_logger().error(f"Error canceling order: {str(e)}")
         else:
-            self.status_label.setText("취소할 주문을 선택하세요.")
+            self.status_label.setText("취소할 메뉴를 선택하세요.")
+
 
     def handle_delivery(self):
         selected_items = self.orderList.selectedItems()
@@ -97,17 +108,24 @@ class KitchenUI(QMainWindow):
 
     def update_order_list(self):
         """주문 목록 업데이트"""
-        current_items = set(self.orderList.item(i).text() for i in range(self.orderList.count()))
-        new_items = set(self.ros_node.order_status_list)
+        try:
+            # 현재 UI에 있는 항목과 ROS 노드에서 관리하는 상태 리스트를 동기화
+            current_items = set(self.orderList.item(i).text() for i in range(self.orderList.count()))
+            new_items = set(self.ros_node.order_status_list)
 
-        # 새로운 항목 추가
-        for item in new_items - current_items:
-            self.orderList.addItem(item)
+            # 새로운 항목 추가
+            for item in new_items - current_items:
+                self.orderList.addItem(item)
 
-        # 제거된 항목 삭제
-        for i in range(self.orderList.count() - 1, -1, -1):
-            if self.orderList.item(i).text() not in new_items:
-                self.orderList.takeItem(i)
+            # 제거된 항목 삭제
+            for i in range(self.orderList.count() - 1, -1, -1):
+                if self.orderList.item(i).text() not in new_items:
+                    self.orderList.takeItem(i)
+
+        except Exception as e:
+            self.ros_node.get_logger().error(f"Error updating order list: {str(e)}")
+
+
 
 
 class KitchenNode(Node):
@@ -136,17 +154,23 @@ class KitchenNode(Node):
         self.create_timer(1.0, self.publish_status)
         self.get_logger().info("Kitchen node has been started.")
 
+
     def handle_order(self, request, response):
         """주문 요청 처리"""
         try:
-            self.get_logger().info(f"Order received: table_id={request.table_id}, menu_items={request.menu_items}, total_price={request.total_price}")
+            self.get_logger().info(f"Order received: table_id={request.table_id}, menu_items={request.menu_items}, quantities={request.quantities}, total_price={request.total_price}")
+            
+            # 메뉴와 수량을 Dictionary로 변환 후 JSON으로 직렬화
+            menu_dict = dict(zip(request.menu_items, request.quantities))
+            menu_items_json = json.dumps(menu_dict)  # {"menu_name": quantity}
 
-            # 주문 상태 바로 추가
-            self.change_order_status(request.table_id, "COOKING")
+            # 주문 상태를 관리하는 리스트에 추가
+            for menu, quantity in menu_dict.items():
+                self.order_status_list.append(f"Table {request.table_id} - {menu} ({quantity})")
 
             # 응답 데이터 설정
             response.success = True
-            response.message = f"{request.table_id}의 주문이 성공적으로 접수 되었습니다."
+            response.message = f"{request.table_id}의 주문이 성공적으로 접수되었습니다."
             self.get_logger().info(f"Order response sent: {response.message}")
             return response
 
@@ -156,6 +180,7 @@ class KitchenNode(Node):
             response.message = "Error processing order"
             return response
 
+        
     def change_order_status(self, table_id, new_status):
         """주문 상태 변경"""
         for status in self.order_status_list[:]:
@@ -194,6 +219,8 @@ class KitchenNode(Node):
 
 
 def main(args=None):
+    # 데이터베이스 초기화
+
     rclpy.init(args=args)
 
     # ROS2 노드 생성
@@ -214,3 +241,4 @@ def main(args=None):
 
 if __name__ == '__main__':
     main()
+
