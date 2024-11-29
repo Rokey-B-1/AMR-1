@@ -1,17 +1,18 @@
 import sys
 import time
+import functools
 from PyQt5 import QtCore, QtGui, QtWidgets
 from PyQt5.QtWidgets import QApplication, QMainWindow, QMessageBox
 from PySide2.QtCore import *
 
 import rclpy
+import rclpy.action
 from rclpy.node import Node
 from system_interfaces.msg import OrderStatus
 from system_interfaces.srv import OrderDetail
-from action_msgs.msg import GoalStatus
 from nav2_msgs.action import NavigateToPose
 from geometry_msgs.msg import PoseStamped
-from nav2_msgs.action import NavigateThroughPoses
+from rclpy.duration import Duration
 from nav2_msgs.srv import SetInitialPose
 from geometry_msgs.msg import Point, Quaternion
 # from std_msgs.msg import String
@@ -32,7 +33,7 @@ coordinates = {
     5 : [1.8414881229400635, 0.1905091106891632, 0.0],
     6 : [1.8414881229400635, -0.8839163184165955, 0.0],
     "Kitchen" : [0.9438039660453796, 1.268632173538208, 0.0], # Kitchen
-    "Home" : [-2.0, -0.5, 0.0] # Home position
+    "Home" : [0.0, 0.0, 0.0] # Home position
 }
 
 class KitchenNone(Node) :
@@ -41,25 +42,28 @@ class KitchenNone(Node) :
         self.callback_group = ReentrantCallbackGroup()
         
         """ 변수 """
-        self.current_goal_handle = None
-        self.stop_requested = False
-        self.where_robot = "로봇이 Home에 있습니다."
-        self.wait_time = 5
-        self.traversal_list = []
+        self.where_robot = "로봇이 Home에 있습니다."  # 주방 모니터 왼쪽 상단 로봇 location
+        self.wait_time = 5                           # 테이블 체류 시간 (GUI만 구현 / 로직 미구현)
+        self.traversal_list = []                     # 테이블 순회 리스트 (GUI만 구현 / 로직 미구현)
         
-        # 주문 상태 관리 (테이블 6개)
+        # 주문 상태 관리 (테이블 6개의 현재 상태 관리)
         self.order_status_list = {1 : INIT, 2 : INIT, 3 : INIT,
                                   4 : INIT, 5 : INIT, 6 : INIT}
+        
+        # 테이블마다의 타이머 관리 (CANCELED 상태를 3초 뒤에 INIT으로 만들 타이머)
+        self.timer_list = {1 : None, 2 : None, 3 : None,
+                       4 : None, 5 : None, 6 : None}
+        
         # 6개 테이블의 상태 퍼블리쉬를 순회하기 위한 변수
         self.current_index = 0
+        
         # 주방 시스템이 관리하는 주문 목록
         self.order_list = {1 : None, 2 : None, 3 : None,
                            4 : None, 5 : None, 6 : None}
         
-        self.last_table = "N"
-        self.goal_handle = None
-        self.init_pose = [0.0, 0.0, 0.0, 1.0]
-        self.robot_wait_timer = None
+        self.last_table = "N"                   # 최근 주문 문구 업데이트용
+        self.goal_handle = None                 # goal cancel을 위해 goal_handle 저장
+        self.init_pose = [0.0, 0.0, 0.0, 1.0]   
         
         # 주문 서비스
         self.order_service = self.create_service(
@@ -175,11 +179,12 @@ class KitchenNone(Node) :
         
         # 상태가 "Canceled..."일 경우 3초 뒤에 "안녕하세요"로 복원하는 타이머 설정
         if new_status == CANCELED:
-            self.create_timer(3.0, lambda: self.reset_order_status(table_id))
+            self.timer_list[table_id] = self.create_timer(3.0, lambda: self.reset_order_status(table_id))
         
     def reset_order_status(self, table_id):
         """주문 상태를 "안녕하세요"로 복원"""
         self.order_status_list[table_id] = INIT
+        self.timer_list[table_id] = None
         
     def publish_status(self):
         """현재 테이블 상태를 순차적으로 발행"""
@@ -218,8 +223,18 @@ class KitchenNone(Node) :
 
         future = self.set_initial_pose_service_client.call_async(req)
 
+    def create_goal(self, x, y, theta):
+        goal = PoseStamped()
+        goal.header.frame_id = 'map'
+        goal.header.stamp = self.get_clock().now().to_msg()
+        goal.pose.position.x = x
+        goal.pose.position.y = y
+        goal.pose.orientation.z = theta  # 단순하게 z를 설정하지만, 필요시 쿼터니언 변환 사용
+        return goal
+
     ###### Action Logic ######
     def send_goal(self, table, x, y, theta):
+        self.goal_table = table
         goal_msg = NavigateToPose.Goal()
         
         goal_msg.pose.header.frame_id = "map"
@@ -229,8 +244,9 @@ class KitchenNone(Node) :
         goal_msg.pose.pose.orientation.z = theta
         goal_msg.pose.pose.orientation.w = 1.0
         
-        if table.isdigit() :
+        if isinstance(table, int) :
             self.where_robot = f"로봇이 {table}번 테이블로 이동 중..."
+            self.change_order_status(table, DELIVERING)
         else :
             self.where_robot = f"로봇이 {table}으로 이동 중..."
         
@@ -247,7 +263,7 @@ class KitchenNone(Node) :
         feedback = feedback_msg.feedback
         # 피드백은 터미널에서 Log로만 확인 / 실제 GUI에 띄우지는 않음
         self.get_logger().info(f"로봇의 현재 위치 : {feedback.current_pose}")
-        
+    
     def goal_response_callback(self, future):
         self.goal_handle = future.result()
         
@@ -261,14 +277,11 @@ class KitchenNone(Node) :
         
     def get_result_callback(self, future):
         result = future.result().result
-        print(result)
-        if result == GoalStatus.STATUS_SUCCEEDED :
-            self.get_logger().info(f'{self.where_robot}에 도착하였습니다.')
-            self.where_robot = "로봇이 목표지점에 도착, 대기 중"
 
-        else :
-            self.get_logger().warn(f'{self.where_robot}에 도착하지 못하였습니다. (by. 취소 OR 에러)')
-            
+        self.get_logger().debug(f'{self.where_robot}에 도착하였습니다.')
+        self.where_robot = "로봇이 목표지점에 도착, 대기 중"
+        self.change_order_status(self.goal_table, INIT)
+
     # 로봇 정지 (로봇 멈춤 / 순회 리스트 초기화 / qt에서도 순회 리스트 초기화)
     def cancel_goal(self):
         if self.goal_handle is not None:
@@ -281,12 +294,9 @@ class KitchenNone(Node) :
     def cancel_done_callback(self, future):
         cancel_result = future.result()
         
-        if cancel_result.accepted:
-            self.traversal_list = [] # 순회 리스트 초기화
-            self.where_robot = "로봇이 정지 하였습니다. 로봇 작동을 재개하세요."
-            self.get_logger().info('Goal successfully cancelled.')
-        else:
-            self.get_logger().warn('Goal cancellation failed.')
+        self.traversal_list = [] # 순회 리스트 초기화
+        self.where_robot = "로봇이 정지 하였습니다. 로봇 작동을 재개하세요."
+        self.get_logger().info('Goal successfully cancelled.')
 
 ###############################################################################3
 class kitchen_program(object) :
@@ -308,6 +318,7 @@ class kitchen_program(object) :
         self.timer = QTimer()
         self.timer.timeout.connect(self.spin_once)
         self.timer.start(250)  # 250ms마다 ROS2 콜백 처리
+        
         
     def spin_once(self):
         """QTimer로 호출되는 ROS2 콜백 처리"""
@@ -634,11 +645,18 @@ class kitchen_program(object) :
                                                        self.node.order_list[table]["total_price"])
             
             self.tables[table-1].setText(summary)
-            self.tables[table-1].setText(summary)
+         
+    def update_travesal_view(self) :
+        # QListWidget 초기화
+        self.traversal_list.clear()
+        
+        # 리스트의 값을 QListWidget에 추가
+        for item in self.node.traversal_list :
+            self.traversal_list.addItem(item)
          
     def update_robot_position(self) :
         self.robot_location.setText(self.node.where_robot)
-            
+
     def remove_selected_item(self):
         """선택된 주문 항목 삭제"""
         if ((self.is_valid_table()) and (self.is_not_delivering())):
@@ -710,28 +728,16 @@ class kitchen_program(object) :
     def robot_move(self) :
         # 테이블 순회 리스트가 있을 때
         if self.node.traversal_list :
-            self.go_to_kitchen() #
-            
-            for table_num in self.node.traversal_list :
-                self.node.send_goal(table_num, #
-                                    coordinates[table_num][0], 
-                                    coordinates[table_num][1], 
-                                    coordinates[table_num][2])   
-                
-            self.go_to_home #
+            pass
 
         else :
             # 그냥 테이블 하나만 보낼 때
             if self.is_valid_table() :
-                self.go_to_kitchen() #
-                
-                self.node.send_goal(self.selected_table, #
-                                    coordinates[self.selected_table][0], 
-                                    coordinates[self.selected_table][1], 
-                                    coordinates[self.selected_table][2])
-                
-                self.go_to_home # 
-                
+                    self.node.send_goal(self.selected_table, #
+                                        coordinates[self.selected_table][0], 
+                                        coordinates[self.selected_table][1], 
+                                        coordinates[self.selected_table][2])
+
     def stop(self) :
         self.node.cancel_goal()
         self.traversal_list.clear()
@@ -769,6 +775,7 @@ class kitchen_program(object) :
                 # DB에 저장 (주말에 추가)
 
                 # UI 초기화
+                self.detail.setText("")
                 self.selected_table = -1
                 self.table_click(self.selected_table)
                 
